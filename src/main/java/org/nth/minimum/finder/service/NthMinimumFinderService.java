@@ -4,8 +4,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
-import lombok.extern.slf4j.Slf4j;
+import java.util.Set;
+import org.apache.commons.io.FilenameUtils;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.Row;
@@ -16,9 +18,12 @@ import org.nth.minimum.finder.dto.FindRequest;
 import org.nth.minimum.finder.dto.FindResponse;
 import org.springframework.stereotype.Service;
 
-@Slf4j
 @Service
 public class NthMinimumFinderService {
+
+  private static final String ALLOWED_FILE_EXTENSION = "xlsx";
+  private static final int SHEET_INDEX = 0;
+  private static final int CELL_INDEX = 0;
 
   public FindResponse findNumber(FindRequest request) throws IOException {
     String filePath = request.getFilePath();
@@ -29,85 +34,72 @@ public class NthMinimumFinderService {
       throw new IllegalArgumentException("Файл не существует: " + filePath);
     }
 
-    List<Integer> numbers = readNumbersFromXlsxFile(filePath);
-    if (n > numbers.size()) {
-      throw new IllegalArgumentException("Запрошенный N (" + n + ") больше количества чисел в файле (" + numbers.size() + ")");
+    // Первый плохой момент для последующей обработки
+    if (!FilenameUtils.getExtension(filePath).equals(ALLOWED_FILE_EXTENSION)) {
+      throw new IllegalArgumentException("Можно обрабатывать только .xlsx файлы: " + filePath);
     }
 
-    int[] nums = numbers.stream()
-        .mapToInt(Integer::intValue)
-        .toArray();
+    // Лучше сразу при получении числа пытаться отсортировать их
+    // В таком случае сложность может быть O(n * log(n))
+    // При использовании quick select алгоритма в худшем случае сложность будет O(n^2)
+    List<Integer> sortedNumbers = readNumbersAndSort(filePath);
+    if (n > sortedNumbers.size()) {
+      throw new IllegalArgumentException("Запрошенный N (" + n + ") больше количества уникальных чисел в файле (" + sortedNumbers.size() + ")");
+    }
 
-    return new FindResponse(
-        request.getN(),
-        request.getFilePath(),
-        selectNumber(nums, 0, nums.length - 1, n - 1)
-    );
+    return new FindResponse(request.getN(), request.getFilePath(),
+        sortedNumbers.get(n - 1));
   }
 
-  private List<Integer> readNumbersFromXlsxFile(String filePath) throws IOException {
-    List<Integer> numbers = new ArrayList<>();
+  private List<Integer> readNumbersAndSort(String filePath) throws IOException {
+    List<Integer> sortedNumbers = new ArrayList<>();
 
+    Set<Integer> uniqueNumbers = new HashSet<>();
     try (FileInputStream inputStream = new FileInputStream(filePath);
         Workbook workbook = new XSSFWorkbook(inputStream)) {
 
-      Sheet sheet = workbook.getSheetAt(0);
+      // Второй плохой момент, если файл не содержит столбцов
+      if (workbook.getNumberOfSheets() <= 0) {
+        throw new IllegalArgumentException("Файл .xlsx не содержит столбцов: " + filePath);
+      }
+
+      Sheet sheet = workbook.getSheetAt(SHEET_INDEX);
       for (Row row : sheet) {
-        Cell cell = row.getCell(0);
+        Cell cell = row.getCell(CELL_INDEX);
         if (cell != null) {
-          try {
-            if (cell.getCellType() == CellType.NUMERIC) {
-              numbers.add((int) cell.getNumericCellValue());
-            } else if (cell.getCellType() == CellType.STRING) {
-              numbers.add(Integer.parseInt(cell.getStringCellValue()));
+          // Можно ограничиться только NUMERIC типом
+          if (cell.getCellType() == CellType.NUMERIC) {
+            int number = (int) cell.getNumericCellValue();
+
+            if (uniqueNumbers.add(number)) {
+              int position = searchPositionToAdd(sortedNumbers, number);
+              sortedNumbers.add(position, number);
             }
-          } catch (NumberFormatException e) {
-            // do nothing
           }
         }
       }
     }
 
-    return numbers;
+    return sortedNumbers;
   }
 
-  private static int selectNumber(int[] numbers, int left, int right, int k) {
-    if (left == right) {
-      return numbers[left];
-    }
+  private int searchPositionToAdd(List<Integer> numbers, int target) {
+    int left = 0;
+    int right = numbers.size() - 1;
 
-    int pivotIndex = 0;
-    pivotIndex = partition(numbers, left, right, pivotIndex);
+    while (left <= right) {
+      int middle = (left + right) >>> 1;
 
-    if (k == pivotIndex) {
-      return numbers[k];
-    } else if (k < pivotIndex) {
-      return selectNumber(numbers, left, pivotIndex - 1, k);
-    } else {
-      return selectNumber(numbers, pivotIndex + 1, right, k);
-    }
-  }
-
-  private static int partition(int[] numbers, int left, int right, int pivotIndex) {
-    int pivot = numbers[pivotIndex];
-
-    swap(numbers, pivotIndex, right);
-
-    int storeIndex = left;
-    for (int i = left; i < right; i++) {
-      if (numbers[i] <= pivot) {
-        swap(numbers, storeIndex, i);
-        storeIndex++;
+      int middleValue = numbers.get(middle);
+      if (middleValue < target) {
+        left = middle + 1;
+      } else if (middleValue > target) {
+        right = middle - 1;
+      } else {
+        return middle;
       }
     }
 
-    swap(numbers, storeIndex, right);
-    return storeIndex;
-  }
-
-  private static void swap(int[] arr, int i, int j) {
-    int temp = arr[i];
-    arr[i] = arr[j];
-    arr[j] = temp;
+    return left;
   }
 }
